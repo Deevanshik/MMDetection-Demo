@@ -90,6 +90,11 @@ class DynamicSoftLabelAssigner(BaseAssigner):
         """
         gt_bboxes = gt_instances.bboxes
         gt_labels = gt_instances.labels
+        try:
+            gt_attributes = gt_instances.attributes
+            pred_attri_scores = pred_instances.attri_scores
+        except:
+            print("cant find attribute")
         num_gt = gt_bboxes.size(0)
 
         decoded_bboxes = pred_instances.bboxes
@@ -128,6 +133,10 @@ class DynamicSoftLabelAssigner(BaseAssigner):
 
         valid_decoded_bbox = decoded_bboxes[valid_mask]
         valid_pred_scores = pred_scores[valid_mask]
+        try:
+            valid_attri_scores = pred_attri_scores[valid_mask]
+        except:
+            print("cant find attribute")
         num_valid = valid_decoded_bbox.size(0)
 
         if num_valid == 0:
@@ -136,8 +145,15 @@ class DynamicSoftLabelAssigner(BaseAssigner):
             assigned_labels = decoded_bboxes.new_full((num_bboxes, ),
                                                       -1,
                                                       dtype=torch.long)
-            return AssignResult(
-                num_gt, assigned_gt_inds, max_overlaps, labels=assigned_labels)
+            try:
+                assigned_attributes = decoded_bboxes.new_full((num_bboxes, ),
+                                                        -1,
+                                                        dtype=torch.long)
+                return AssignResult(
+                    num_gt, assigned_gt_inds, max_overlaps, labels=assigned_labels,  attributes= assigned_attributes)
+            except:
+                return AssignResult(
+                    num_gt, assigned_gt_inds, max_overlaps, labels=assigned_labels)
         if hasattr(gt_instances, 'masks'):
             gt_center = center_of_mass(gt_instances.masks, eps=EPS)
         elif isinstance(gt_bboxes, BaseBoxes):
@@ -159,6 +175,22 @@ class DynamicSoftLabelAssigner(BaseAssigner):
                       pred_scores.shape[-1]).float().unsqueeze(0).repeat(
                           num_valid, 1, 1))
         valid_pred_scores = valid_pred_scores.unsqueeze(1).repeat(1, num_gt, 1)
+        try:
+            gt_onehot_attribute = (
+                F.one_hot(gt_attributes.to(torch.int64),
+                        pred_attri_scores.shape[-1]).float().unsqueeze(0).repeat(
+                            num_valid, 1, 1))
+
+            valid_attri_scores = valid_attri_scores.unsqueeze(1).repeat(1, num_gt, 1)
+
+            soft_attri = gt_onehot_attribute * pairwise_ious[..., None]
+            scale_factor = soft_attri - valid_attri_scores.sigmoid()
+            soft_attri_cost = F.binary_cross_entropy_with_logits(
+                valid_attri_scores, soft_attri,
+                reduction='none') * scale_factor.abs().pow(2.0)
+            soft_attri_cost = soft_attri_cost.sum(dim=-1)
+        except:
+            print('cant find attribute')
 
         soft_label = gt_onehot_label * pairwise_ious[..., None]
         scale_factor = soft_label - valid_pred_scores.sigmoid()
@@ -167,7 +199,10 @@ class DynamicSoftLabelAssigner(BaseAssigner):
             reduction='none') * scale_factor.abs().pow(2.0)
         soft_cls_cost = soft_cls_cost.sum(dim=-1)
 
-        cost_matrix = soft_cls_cost + iou_cost + soft_center_prior
+        try:
+            cost_matrix = soft_cls_cost + iou_cost + soft_center_prior + soft_attri_cost
+        except:
+            cost_matrix = soft_cls_cost + iou_cost + soft_center_prior
 
         matched_pred_ious, matched_gt_inds = self.dynamic_k_matching(
             cost_matrix, pairwise_ious, num_gt, valid_mask)
@@ -176,12 +211,23 @@ class DynamicSoftLabelAssigner(BaseAssigner):
         assigned_gt_inds[valid_mask] = matched_gt_inds + 1
         assigned_labels = assigned_gt_inds.new_full((num_bboxes, ), -1)
         assigned_labels[valid_mask] = gt_labels[matched_gt_inds].long()
-        max_overlaps = assigned_gt_inds.new_full((num_bboxes, ),
-                                                 -INF,
-                                                 dtype=torch.float32)
-        max_overlaps[valid_mask] = matched_pred_ious
-        return AssignResult(
-            num_gt, assigned_gt_inds, max_overlaps, labels=assigned_labels)
+        try:
+            assigned_attributes =assigned_gt_inds.new_full((num_bboxes, ), -1)
+            assigned_attributes[valid_mask] = gt_attributes[matched_gt_inds].long()
+            
+            max_overlaps = assigned_gt_inds.new_full((num_bboxes, ),
+                                                    -INF,
+                                                    dtype=torch.float32)
+            max_overlaps[valid_mask] = matched_pred_ious
+            return AssignResult(
+                num_gt, assigned_gt_inds, max_overlaps, labels=assigned_labels, attributes= assigned_attributes)
+        except:
+            max_overlaps = assigned_gt_inds.new_full((num_bboxes, ),
+                                                    -INF,
+                                                    dtype=torch.float32)
+            max_overlaps[valid_mask] = matched_pred_ious
+            return AssignResult(
+                num_gt, assigned_gt_inds, max_overlaps, labels=assigned_labels)
 
     def dynamic_k_matching(self, cost: Tensor, pairwise_ious: Tensor,
                            num_gt: int,

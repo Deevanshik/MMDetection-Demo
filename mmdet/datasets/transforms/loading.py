@@ -305,6 +305,14 @@ class LoadAnnotations(MMCV_LoadAnnotations):
         results['gt_bboxes_labels'] = np.array(
             gt_bboxes_labels, dtype=np.int64)
 
+    def _load_attribute(self, results: dict) -> None:
+
+        gt_attributes = []
+        for instance in results.get('instances', []):
+            gt_attributes.append(instance['attribute_id'])
+        results['gt_attributes'] = np.array(
+            gt_attributes, dtype=np.int64)
+
     def _poly2mask(self, mask_ann: Union[list, dict], img_h: int,
                    img_w: int) -> np.ndarray:
         """Private function to convert masks represented with polygon to
@@ -445,6 +453,8 @@ class LoadAnnotations(MMCV_LoadAnnotations):
             self._load_labels(results)
         if self.with_mask:
             self._load_masks(results)
+        if self.with_attribute:
+            self._load_attribute(results)
         if self.with_seg:
             self._load_seg_map(results)
         return results

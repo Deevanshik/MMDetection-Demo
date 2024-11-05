@@ -39,11 +39,12 @@ class AssignResult(util_mixins.NiceRepr):
     """
 
     def __init__(self, num_gts: int, gt_inds: Tensor, max_overlaps: Tensor,
-                 labels: Tensor) -> None:
+                 labels: Tensor, attributes: Tensor) -> None:
         self.num_gts = num_gts
         self.gt_inds = gt_inds
         self.max_overlaps = max_overlaps
         self.labels = labels
+        self.attributes = attributes
         # Interface for possible user-defined properties
         self._extra_properties = {}
 

@@ -201,6 +201,7 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
     def predict_by_feat(self,
                         cls_scores: List[Tensor],
                         bbox_preds: List[Tensor],
+                        attribute_scores:List[Tensor],
                         score_factors: Optional[List[Tensor]] = None,
                         batch_img_metas: Optional[List[dict]] = None,
                         cfg: Optional[ConfigDict] = None,
@@ -244,7 +245,7 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
                 - bboxes (Tensor): Has a shape (num_instances, 4),
                   the last dimension 4 arrange as (x1, y1, x2, y2).
         """
-        assert len(cls_scores) == len(bbox_preds)
+        assert len(cls_scores) == len(bbox_preds) == len(attribute_scores)
 
         if score_factors is None:
             # e.g. Retina, FreeAnchor, Foveabox, etc.
@@ -270,6 +271,8 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
                 cls_scores, img_id, detach=True)
             bbox_pred_list = select_single_mlvl(
                 bbox_preds, img_id, detach=True)
+            attribute_pred_list = select_single_mlvl(
+            attribute_scores, img_id, detach=True)
             if with_score_factors:
                 score_factor_list = select_single_mlvl(
                     score_factors, img_id, detach=True)
@@ -280,6 +283,7 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
                 cls_score_list=cls_score_list,
                 bbox_pred_list=bbox_pred_list,
                 score_factor_list=score_factor_list,
+                attribute_score_list=attribute_pred_list,
                 mlvl_priors=mlvl_priors,
                 img_meta=img_meta,
                 cfg=cfg,
@@ -292,6 +296,7 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
                                 cls_score_list: List[Tensor],
                                 bbox_pred_list: List[Tensor],
                                 score_factor_list: List[Tensor],
+                                attribute_score_list: List[Tensor],
                                 mlvl_priors: List[Tensor],
                                 img_meta: dict,
                                 cfg: ConfigDict,
@@ -352,15 +357,16 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
         mlvl_valid_priors = []
         mlvl_scores = []
         mlvl_labels = []
+        mlvl_attribute = []
         if with_score_factors:
             mlvl_score_factors = []
         else:
             mlvl_score_factors = None
-        for level_idx, (cls_score, bbox_pred, score_factor, priors) in \
+        for level_idx, (cls_score, bbox_pred, score_factor, priors,attribute_score) in \
                 enumerate(zip(cls_score_list, bbox_pred_list,
-                              score_factor_list, mlvl_priors)):
+                              score_factor_list, mlvl_priors, attribute_score_list)):
 
-            assert cls_score.size()[-2:] == bbox_pred.size()[-2:]
+            assert cls_score.size()[-2:] == bbox_pred.size()[-2:] == attribute_score.size()[-2:]
 
             dim = self.bbox_coder.encode_size
             bbox_pred = bbox_pred.permute(1, 2, 0).reshape(-1, dim)
@@ -369,19 +375,25 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
                                                     0).reshape(-1).sigmoid()
             cls_score = cls_score.permute(1, 2,
                                           0).reshape(-1, self.cls_out_channels)
+            #attribute channel
+            attribute_score = attribute_score.permute(1, 2,
+                                          0).reshape(-1, 2)
 
             # the `custom_cls_channels` parameter is derived from
             # CrossEntropyCustomLoss and FocalCustomLoss, and is currently used
             # in v3det.
             if getattr(self.loss_cls, 'custom_cls_channels', False):
                 scores = self.loss_cls.get_activation(cls_score)
+                attri_scores = self.loss_cls.get_activation(attribute_score)
             elif self.use_sigmoid_cls:
                 scores = cls_score.sigmoid()
+                attri_scores = attribute_score.sigmoid()
             else:
                 # remind that we set FG labels to [0, num_class-1]
                 # since mmdet v2.0
                 # BG cat_id: num_class
                 scores = cls_score.softmax(-1)[:, :-1]
+                attri_scores = attribute_score.softmax(-1)[:, :-1]
 
             # After https://github.com/open-mmlab/mmdetection/pull/6268/,
             # this operation keeps fewer bboxes under the same `nms_pre`.
@@ -392,11 +404,13 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
 
             results = filter_scores_and_topk(
                 scores, score_thr, nms_pre,
-                dict(bbox_pred=bbox_pred, priors=priors))
+                dict(bbox_pred=bbox_pred, priors=priors, attri_scores = attri_scores))
             scores, labels, keep_idxs, filtered_results = results
 
             bbox_pred = filtered_results['bbox_pred']
             priors = filtered_results['priors']
+            attribute_scores = filtered_results['attri_scores']
+            attribute_labels = torch.argmax(attribute_scores, dim=1)
 
             if with_score_factors:
                 score_factor = score_factor[keep_idxs]
@@ -405,6 +419,7 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
             mlvl_valid_priors.append(priors)
             mlvl_scores.append(scores)
             mlvl_labels.append(labels)
+            mlvl_attribute.append(attribute_labels)
 
             if with_score_factors:
                 mlvl_score_factors.append(score_factor)
@@ -417,6 +432,7 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
         results.bboxes = bboxes
         results.scores = torch.cat(mlvl_scores)
         results.labels = torch.cat(mlvl_labels)
+        results.attribute_labels = torch.cat(mlvl_attribute)
         if with_score_factors:
             results.score_factors = torch.cat(mlvl_score_factors)
 
