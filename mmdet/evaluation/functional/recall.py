@@ -108,7 +108,7 @@ def eval_recalls(gts,
                 img_proposal[:prop_num, :4],
                 use_legacy_coordinate=use_legacy_coordinate)
         all_ious.append(ious)
-    all_ious = np.array(all_ious)
+    all_ious = np.array(all_ious, dtype=object)
     recalls = _recalls(all_ious, proposal_nums, iou_thrs)
 
     print_recall_summary(recalls, proposal_nums, iou_thrs, logger=logger)
